@@ -1,3 +1,5 @@
+import { next } from '@vercel/functions';
+
 const ROLLING_RELEASE_COOKIE = '_vcrr';
 
 export const config = {
@@ -31,5 +33,6 @@ export default function middleware(request: Request) {
     }),
   );
 
-  return new Response(null);
+  // eslint-disable-next-line
+  return next();
 }
