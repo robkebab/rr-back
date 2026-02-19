@@ -2,13 +2,14 @@ const ROLLING_RELEASE_COOKIE = '_vcrr';
 
 export function middleware(request: Request) {
   // Get all cookies as an array of { name, value } objects
-  const cookies = request.headers
-    .get('Cookie')
-    ?.split(';')
-    .map((pair) => {
-      const [name, ...rest] = pair.trim().split('=');
-      return { name, value: rest.join('=') };
-    }) ?? [];
+  const cookies =
+    request.headers
+      .get('Cookie')
+      ?.split(';')
+      .map((pair) => {
+        const [name, ...rest] = pair.trim().split('=');
+        return { name, value: rest.join('=') };
+      }) ?? [];
 
   // Find the cookie that starts with the ROLLING_RELEASE_COOKIE
   const rrCookie = cookies.find((cookie) =>
