@@ -13,11 +13,13 @@ export class AppController {
 
   @Get('/health')
   getHealth(): string {
+    console.log('Health check');
     return 'OK';
   }
 
   @Get('/version')
   getVersion(): string {
+    console.log('Version check');
     return '1.0.0';
   }
 }
