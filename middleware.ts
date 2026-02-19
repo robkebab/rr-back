@@ -1,6 +1,13 @@
 const ROLLING_RELEASE_COOKIE = '_vcrr';
 
-export function middleware(request: Request) {
+export const config = {
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+  ],
+  runtime: 'nodejs',
+};
+
+export default function middleware(request: Request) {
   // Get all cookies as an array of { name, value } objects
   const cookies =
     request.headers
@@ -26,9 +33,3 @@ export function middleware(request: Request) {
 
   return new Response(null);
 }
-
-export const config = {
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
-  ],
-};
