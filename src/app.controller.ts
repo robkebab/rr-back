@@ -1,6 +1,37 @@
-import { Controller, Get, Header, Post, Req } from '@nestjs/common';
+import {
+  Controller,
+  ForbiddenException,
+  Get,
+  Header,
+  Post,
+  Req,
+} from '@nestjs/common';
+import type { RawBodyRequest } from '@nestjs/common';
+import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request } from 'express';
 import { AppService } from './app.service';
+
+function verifyWebhook(
+  rawBody: Buffer,
+  signature: string | undefined,
+  secret: string,
+): void {
+  if (!signature) {
+    throw new ForbiddenException('Missing x-vercel-signature header');
+  }
+
+  const expected = createHmac('sha1', secret).update(rawBody).digest('hex');
+
+  const expectedBuf = Buffer.from(expected, 'utf-8');
+  const signatureBuf = Buffer.from(signature, 'utf-8');
+
+  if (
+    expectedBuf.length !== signatureBuf.length ||
+    !timingSafeEqual(expectedBuf, signatureBuf)
+  ) {
+    throw new ForbiddenException('Invalid webhook signature');
+  }
+}
 
 @Controller()
 export class AppController {
@@ -25,7 +56,13 @@ export class AppController {
   }
 
   @Post('/webhook')
-  handleWebhook(@Req() req: Request): { received: boolean } {
+  handleWebhook(@Req() req: RawBodyRequest<Request>): { received: boolean } {
+    verifyWebhook(
+      req.rawBody!,
+      req.headers['x-vercel-signature'] as string | undefined,
+      process.env.VERCEL_WEBHOOK_SECRET!,
+    );
+
     const timestamp = new Date().toISOString();
     const headers: Record<string, string | string[] | undefined> = {
       ...req.headers,
