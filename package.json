@@ -26,6 +26,7 @@
     "@nestjs/platform-express": "^11.0.1",
     "@vercel/functions": "^3.4.2",
     "@vercel/sdk": "^1.19.5",
+    "dotenv": "^17.3.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
