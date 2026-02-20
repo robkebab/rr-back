@@ -16,13 +16,13 @@ export class AppController {
   @Get('/health')
   getHealth(): string {
     console.log('Health check');
-    return 'NOT OK';
+    return 'OK';
   }
 
   @Get('/version')
   getVersion(): string {
     console.log('Version check');
-    return '1.0.0';
+    return '1.0.1';
   }
 
   @Post('/webhook')
