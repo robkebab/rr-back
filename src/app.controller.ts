@@ -64,9 +64,7 @@ export class AppController {
     );
 
     const timestamp = new Date().toISOString();
-    const headers: Record<string, string | string[] | undefined> = {
-      ...req.headers,
-    };
+
     const body: unknown = req.body ?? '(empty)';
 
     const logLines = [
@@ -74,10 +72,6 @@ export class AppController {
       `Time: ${timestamp}`,
       `Method: ${req.method}`,
       `Path: ${req.path}`,
-      'Headers:',
-      Object.entries(headers)
-        .map(([k, v]) => `  ${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
-        .join('\n'),
       'Body:',
       typeof body === 'object' && body !== null
         ? JSON.stringify(body, null, 2)
