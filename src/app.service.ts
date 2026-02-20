@@ -1,7 +1,61 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 @Injectable()
 export class AppService {
+  handleWebhook(
+    rawBody: Buffer,
+    signature: string | undefined,
+    method: string,
+    path: string,
+    body: unknown,
+  ): { received: boolean } {
+    this.verifySignature(
+      rawBody,
+      signature,
+      process.env.VERCEL_WEBHOOK_SECRET!,
+    );
+
+    const timestamp = new Date().toISOString();
+    const safeBody = body ?? '(empty)';
+
+    const logLines = [
+      '--- Rolling release webhook ---',
+      `Time: ${timestamp}`,
+      `Method: ${method}`,
+      `Path: ${path}`,
+      'Body:',
+      typeof safeBody === 'object' && safeBody !== null
+        ? JSON.stringify(safeBody, null, 2)
+        : String(safeBody as string),
+      '---',
+    ];
+    console.log(logLines.join('\n'));
+
+    return { received: true };
+  }
+
+  private verifySignature(
+    rawBody: Buffer,
+    signature: string | undefined,
+    secret: string,
+  ): void {
+    if (!signature) {
+      throw new ForbiddenException('Missing x-vercel-signature header');
+    }
+
+    const expected = createHmac('sha1', secret).update(rawBody).digest('hex');
+
+    const expectedBuf = Buffer.from(expected, 'utf-8');
+    const signatureBuf = Buffer.from(signature, 'utf-8');
+
+    if (
+      expectedBuf.length !== signatureBuf.length ||
+      !timingSafeEqual(expectedBuf, signatureBuf)
+    ) {
+      throw new ForbiddenException('Invalid webhook signature');
+    }
+  }
   getHello(): string {
     return `
     <!DOCTYPE html>
