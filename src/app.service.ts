@@ -1,5 +1,4 @@
 import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
-import { Vercel } from '@vercel/sdk';
 import { createHmac, timingSafeEqual } from 'crypto';
 
 interface RollingReleaseWebhook {
@@ -33,9 +32,20 @@ const EVENT_TYPES = {
 @Injectable()
 export class AppService {
   private readonly logger = new Logger(AppService.name);
-  private readonly vercel = new Vercel({
-    bearerToken: process.env.VERCEL_API_TOKEN!,
-  });
+  private vercelClient: Awaited<ReturnType<typeof this.loadVercel>> | null =
+    null;
+
+  private async loadVercel() {
+    const { Vercel } = await import('@vercel/sdk');
+    return new Vercel({ bearerToken: process.env.VERCEL_API_TOKEN! });
+  }
+
+  private async getVercel() {
+    if (!this.vercelClient) {
+      this.vercelClient = await this.loadVercel();
+    }
+    return this.vercelClient;
+  }
 
   async handleWebhook(
     rawBody: Buffer,
@@ -142,12 +152,12 @@ export class AppService {
       `Rolling release completed for ${event.payload.projectName}, completing rr-back rolling release`,
     );
 
-    const { rollingRelease } =
-      await this.vercel.rollingRelease.getRollingRelease({
-        idOrName: 'rr-back',
-        teamId,
-        state: 'ACTIVE',
-      });
+    const vercel = await this.getVercel();
+    const { rollingRelease } = await vercel.rollingRelease.getRollingRelease({
+      idOrName: 'rr-back',
+      teamId,
+      state: 'ACTIVE',
+    });
 
     const canaryDeploymentId = rollingRelease?.canaryDeployment?.id;
     if (!canaryDeploymentId) {
@@ -157,7 +167,7 @@ export class AppService {
       return;
     }
 
-    await this.vercel.rollingRelease.completeRollingRelease({
+    await vercel.rollingRelease.completeRollingRelease({
       idOrName: 'rr-back',
       teamId,
       requestBody: { canaryDeploymentId },
@@ -177,12 +187,12 @@ export class AppService {
       `Rolling release aborted for ${event.payload.projectName}, aborting rr-back rolling release`,
     );
 
-    const { rollingRelease } =
-      await this.vercel.rollingRelease.getRollingRelease({
-        idOrName: 'rr-back',
-        teamId,
-        state: 'ACTIVE',
-      });
+    const vercel = await this.getVercel();
+    const { rollingRelease } = await vercel.rollingRelease.getRollingRelease({
+      idOrName: 'rr-back',
+      teamId,
+      state: 'ACTIVE',
+    });
 
     const canaryDeploymentId = rollingRelease?.canaryDeployment?.id;
     if (!canaryDeploymentId) {
@@ -229,7 +239,8 @@ export class AppService {
   }
 
   private async readEdgeConfigItem(key: string): Promise<unknown> {
-    const result = await this.vercel.edgeConfig.getEdgeConfigItem({
+    const vercel = await this.getVercel();
+    const result = await vercel.edgeConfig.getEdgeConfigItem({
       edgeConfigId: process.env.RR_EDGE_CONFIG!,
       edgeConfigItemKey: key,
       teamId: process.env.VERCEL_TEAM_ID,
@@ -240,7 +251,8 @@ export class AppService {
   private async updateEdgeConfig(
     items: { operation: 'upsert'; key: string; value: unknown }[],
   ): Promise<void> {
-    await this.vercel.edgeConfig.patchEdgeConfigItems({
+    const vercel = await this.getVercel();
+    await vercel.edgeConfig.patchEdgeConfigItems({
       edgeConfigId: process.env.RR_EDGE_CONFIG!,
       teamId: process.env.VERCEL_TEAM_ID,
       requestBody: { items },
