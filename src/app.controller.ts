@@ -22,7 +22,7 @@ export class AppController {
   @Get('/version')
   getVersion(): string {
     console.log('Version check');
-    return '1.0.1';
+    return '1.0.2';
   }
 
   @Post('/webhook')
