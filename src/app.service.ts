@@ -1,4 +1,5 @@
 import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { Vercel } from '@vercel/sdk';
 import { createHmac, timingSafeEqual } from 'crypto';
 
 interface RollingReleaseWebhook {
@@ -32,6 +33,9 @@ const EVENT_TYPES = {
 @Injectable()
 export class AppService {
   private readonly logger = new Logger(AppService.name);
+  private readonly vercel = new Vercel({
+    bearerToken: process.env.VERCEL_API_TOKEN!,
+  });
 
   async handleWebhook(
     rawBody: Buffer,
@@ -60,10 +64,13 @@ export class AppService {
         await this.onRollingReleaseStarted(event);
         break;
       case EVENT_TYPES.APPROVED:
+        await this.onRollingReleaseApproved(event);
         break;
       case EVENT_TYPES.COMPLETED:
+        await this.onRollingReleaseCompleted(event);
         break;
       case EVENT_TYPES.ABORTED:
+        await this.onRollingReleaseAborted(event);
         break;
       default:
         this.logger.warn(`Unknown event type: ${event.type}`);
@@ -96,42 +103,148 @@ export class AppService {
     ]);
   }
 
-  private async updateEdgeConfig(
-    items: { operation: string; key: string; value: unknown }[],
+  private async onRollingReleaseApproved(
+    event: RollingReleaseWebhook,
   ): Promise<void> {
-    const edgeConfigId = process.env.RR_EDGE_CONFIG;
-    const token = process.env.VERCEL_API_TOKEN;
-    const teamId = process.env.VERCEL_TEAM_ID;
+    const { targetPercentage, targetDeploymentId } =
+      event.payload.rollingRelease.default;
 
-    if (!edgeConfigId || !token) {
-      throw new Error(
-        'RR_EDGE_CONFIG and VERCEL_API_TOKEN environment variables must be set',
+    const storedDeploymentId = (await this.readEdgeConfigItem(
+      'targetDeploymentId',
+    )) as string | undefined;
+
+    if (storedDeploymentId !== targetDeploymentId) {
+      this.logger.warn(
+        `Deployment ID mismatch: edge config has "${storedDeploymentId ?? '(none)'}" but webhook has "${targetDeploymentId}" — skipping`,
       );
+      return;
     }
 
+    this.logger.log(
+      `Rolling release approved: ${targetDeploymentId} advancing to ${targetPercentage}%`,
+    );
+
+    await this.updateEdgeConfig([
+      {
+        operation: 'upsert',
+        key: 'targetPercentage',
+        value: (targetPercentage ?? 0) / 100,
+      },
+    ]);
+  }
+
+  private async onRollingReleaseCompleted(
+    event: RollingReleaseWebhook,
+  ): Promise<void> {
+    const teamId = process.env.VERCEL_TEAM_ID;
+
+    this.logger.log(
+      `Rolling release completed for ${event.payload.projectName}, completing rr-back rolling release`,
+    );
+
+    const { rollingRelease } =
+      await this.vercel.rollingRelease.getRollingRelease({
+        idOrName: 'rr-back',
+        teamId,
+        state: 'ACTIVE',
+      });
+
+    const canaryDeploymentId = rollingRelease?.canaryDeployment?.id;
+    if (!canaryDeploymentId) {
+      this.logger.warn(
+        'No active rolling release found for rr-back — skipping',
+      );
+      return;
+    }
+
+    await this.vercel.rollingRelease.completeRollingRelease({
+      idOrName: 'rr-back',
+      teamId,
+      requestBody: { canaryDeploymentId },
+    });
+
+    this.logger.log(
+      `Completed rr-back rolling release (canary: ${canaryDeploymentId})`,
+    );
+  }
+
+  private async onRollingReleaseAborted(
+    event: RollingReleaseWebhook,
+  ): Promise<void> {
+    const teamId = process.env.VERCEL_TEAM_ID;
+
+    this.logger.log(
+      `Rolling release aborted for ${event.payload.projectName}, aborting rr-back rolling release`,
+    );
+
+    const { rollingRelease } =
+      await this.vercel.rollingRelease.getRollingRelease({
+        idOrName: 'rr-back',
+        teamId,
+        state: 'ACTIVE',
+      });
+
+    const canaryDeploymentId = rollingRelease?.canaryDeployment?.id;
+    if (!canaryDeploymentId) {
+      this.logger.warn(
+        'No active rolling release found for rr-back — skipping',
+      );
+      return;
+    }
+
+    await this.abortRollingRelease('rr-back', canaryDeploymentId);
+
+    this.logger.log(
+      `Aborted rr-back rolling release (canary: ${canaryDeploymentId})`,
+    );
+  }
+
+  private async abortRollingRelease(
+    idOrName: string,
+    canaryDeploymentId: string,
+  ): Promise<void> {
+    const teamId = process.env.VERCEL_TEAM_ID;
     const url = new URL(
-      `https://api.vercel.com/v1/edge-config/${edgeConfigId}/items`,
+      `https://api.vercel.com/v1/projects/${idOrName}/rolling-release/abort`,
     );
     if (teamId) {
       url.searchParams.set('teamId', teamId);
     }
 
     const response = await fetch(url.toString(), {
-      method: 'PATCH',
+      method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${process.env.VERCEL_API_TOKEN}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ items }),
+      body: JSON.stringify({ canaryDeploymentId }),
     });
 
     if (!response.ok) {
       const errorBody = await response.text();
       throw new Error(
-        `Edge Config update failed (${response.status}): ${errorBody}`,
+        `Rolling release abort failed (${response.status}): ${errorBody}`,
       );
     }
+  }
 
+  private async readEdgeConfigItem(key: string): Promise<unknown> {
+    const result = await this.vercel.edgeConfig.getEdgeConfigItem({
+      edgeConfigId: process.env.RR_EDGE_CONFIG!,
+      edgeConfigItemKey: key,
+      teamId: process.env.VERCEL_TEAM_ID,
+    });
+    return result.value;
+  }
+
+  private async updateEdgeConfig(
+    items: { operation: 'upsert'; key: string; value: unknown }[],
+  ): Promise<void> {
+    await this.vercel.edgeConfig.patchEdgeConfigItems({
+      edgeConfigId: process.env.RR_EDGE_CONFIG!,
+      teamId: process.env.VERCEL_TEAM_ID,
+      requestBody: { items },
+    });
     this.logger.log(
       `Edge Config updated: ${items.map((i) => i.key).join(', ')}`,
     );
