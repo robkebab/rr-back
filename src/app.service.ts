@@ -1,38 +1,140 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'crypto';
+
+interface RollingReleaseWebhook {
+  id: string;
+  type: string;
+  createdAt: number;
+  payload: {
+    projectId: string;
+    projectName: string;
+    rollingRelease: {
+      state: string;
+      activeStageIndex: number;
+      default: {
+        baseDeploymentId: string;
+        targetDeploymentId: string;
+        targetPercentage?: number;
+        targetStartAt: number;
+        targetUpdatedAt: number;
+      };
+    };
+  };
+}
+
+const EVENT_TYPES = {
+  STARTED: 'project.rolling-release.started',
+  APPROVED: 'project.rolling-release.approved',
+  COMPLETED: 'project.rolling-release.completed',
+  ABORTED: 'project.rolling-release.aborted',
+} as const;
 
 @Injectable()
 export class AppService {
-  handleWebhook(
+  private readonly logger = new Logger(AppService.name);
+
+  async handleWebhook(
     rawBody: Buffer,
     signature: string | undefined,
-    method: string,
-    path: string,
     body: unknown,
-  ): { received: boolean } {
+  ): Promise<{ received: boolean }> {
     this.verifySignature(
       rawBody,
       signature,
       process.env.VERCEL_WEBHOOK_SECRET!,
     );
 
-    const timestamp = new Date().toISOString();
-    const safeBody = body ?? '(empty)';
+    const event = body as RollingReleaseWebhook;
 
-    const logLines = [
-      '--- Rolling release webhook ---',
-      `Time: ${timestamp}`,
-      `Method: ${method}`,
-      `Path: ${path}`,
-      'Body:',
-      typeof safeBody === 'object' && safeBody !== null
-        ? JSON.stringify(safeBody, null, 2)
-        : String(safeBody as string),
-      '---',
-    ];
-    console.log(logLines.join('\n'));
+    if (event.payload?.projectId !== process.env.VERCEL_LINKED_PROJECT) {
+      this.logger.log(
+        `Ignoring webhook for project ${event.payload?.projectId} (expected ${process.env.VERCEL_LINKED_PROJECT})`,
+      );
+      return { received: true };
+    }
+
+    this.logger.log(`Received ${event.type} for ${event.payload.projectName}`);
+
+    switch (event.type) {
+      case EVENT_TYPES.STARTED:
+        await this.onRollingReleaseStarted(event);
+        break;
+      case EVENT_TYPES.APPROVED:
+        break;
+      case EVENT_TYPES.COMPLETED:
+        break;
+      case EVENT_TYPES.ABORTED:
+        break;
+      default:
+        this.logger.warn(`Unknown event type: ${event.type}`);
+    }
 
     return { received: true };
+  }
+
+  private async onRollingReleaseStarted(
+    event: RollingReleaseWebhook,
+  ): Promise<void> {
+    const { targetPercentage, targetDeploymentId } =
+      event.payload.rollingRelease.default;
+
+    this.logger.log(
+      `Rolling release started: ${targetDeploymentId} at ${targetPercentage}%`,
+    );
+
+    await this.updateEdgeConfig([
+      {
+        operation: 'upsert',
+        key: 'targetPercentage',
+        value: (targetPercentage ?? 0) / 100,
+      },
+      {
+        operation: 'upsert',
+        key: 'targetDeploymentId',
+        value: targetDeploymentId,
+      },
+    ]);
+  }
+
+  private async updateEdgeConfig(
+    items: { operation: string; key: string; value: unknown }[],
+  ): Promise<void> {
+    const edgeConfigId = process.env.RR_EDGE_CONFIG;
+    const token = process.env.VERCEL_API_TOKEN;
+    const teamId = process.env.VERCEL_TEAM_ID;
+
+    if (!edgeConfigId || !token) {
+      throw new Error(
+        'RR_EDGE_CONFIG and VERCEL_API_TOKEN environment variables must be set',
+      );
+    }
+
+    const url = new URL(
+      `https://api.vercel.com/v1/edge-config/${edgeConfigId}/items`,
+    );
+    if (teamId) {
+      url.searchParams.set('teamId', teamId);
+    }
+
+    const response = await fetch(url.toString(), {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ items }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(
+        `Edge Config update failed (${response.status}): ${errorBody}`,
+      );
+    }
+
+    this.logger.log(
+      `Edge Config updated: ${items.map((i) => i.key).join(', ')}`,
+    );
   }
 
   private verifySignature(

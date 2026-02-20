@@ -26,12 +26,12 @@ export class AppController {
   }
 
   @Post('/webhook')
-  handleWebhook(@Req() req: RawBodyRequest<Request>): { received: boolean } {
+  handleWebhook(
+    @Req() req: RawBodyRequest<Request>,
+  ): Promise<{ received: boolean }> {
     return this.appService.handleWebhook(
       req.rawBody!,
       req.headers['x-vercel-signature'] as string | undefined,
-      req.method,
-      req.path,
       req.body,
     );
   }
