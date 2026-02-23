@@ -71,10 +71,10 @@ export class AppService {
 
     switch (event.type) {
       case EVENT_TYPES.STARTED:
-        await this.onRollingReleaseStarted(event);
+        this.onRollingReleaseStarted(event);
         break;
       case EVENT_TYPES.APPROVED:
-        await this.onRollingReleaseApproved(event);
+        this.onRollingReleaseApproved(event);
         break;
       case EVENT_TYPES.COMPLETED:
         await this.onRollingReleaseCompleted(event);
@@ -89,58 +89,22 @@ export class AppService {
     return { received: true };
   }
 
-  private async onRollingReleaseStarted(
-    event: RollingReleaseWebhook,
-  ): Promise<void> {
+  private onRollingReleaseStarted(event: RollingReleaseWebhook): void {
     const { targetPercentage, targetDeploymentId } =
       event.payload.rollingRelease.default;
 
     this.logger.log(
       `Rolling release started: ${targetDeploymentId} at ${targetPercentage}%`,
     );
-
-    await this.updateEdgeConfig([
-      {
-        operation: 'upsert',
-        key: 'targetPercentage',
-        value: (targetPercentage ?? 0) / 100,
-      },
-      {
-        operation: 'upsert',
-        key: 'targetDeploymentId',
-        value: targetDeploymentId,
-      },
-    ]);
   }
 
-  private async onRollingReleaseApproved(
-    event: RollingReleaseWebhook,
-  ): Promise<void> {
+  private onRollingReleaseApproved(event: RollingReleaseWebhook): void {
     const { targetPercentage, targetDeploymentId } =
       event.payload.rollingRelease.default;
-
-    const storedDeploymentId = (await this.readEdgeConfigItem(
-      'targetDeploymentId',
-    )) as string | undefined;
-
-    if (storedDeploymentId !== targetDeploymentId) {
-      this.logger.warn(
-        `Deployment ID mismatch: edge config has "${storedDeploymentId ?? '(none)'}" but webhook has "${targetDeploymentId}" — skipping`,
-      );
-      return;
-    }
 
     this.logger.log(
       `Rolling release approved: ${targetDeploymentId} advancing to ${targetPercentage}%`,
     );
-
-    await this.updateEdgeConfig([
-      {
-        operation: 'upsert',
-        key: 'targetPercentage',
-        value: (targetPercentage ?? 0) / 100,
-      },
-    ]);
   }
 
   private async onRollingReleaseCompleted(
@@ -195,14 +159,13 @@ export class AppService {
     });
 
     const canaryDeploymentId = rollingRelease?.canaryDeployment?.id;
-    if (!canaryDeploymentId) {
+    if (canaryDeploymentId) {
+      await this.abortRollingRelease('rr-back', canaryDeploymentId);
+    } else {
       this.logger.warn(
-        'No active rolling release found for rr-back — skipping',
+        'No active rolling release found for rr-back — skipping abort',
       );
-      return;
     }
-
-    await this.abortRollingRelease('rr-back', canaryDeploymentId);
 
     this.logger.log(
       `Aborted rr-back rolling release (canary: ${canaryDeploymentId})`,
@@ -236,30 +199,6 @@ export class AppService {
         `Rolling release abort failed (${response.status}): ${errorBody}`,
       );
     }
-  }
-
-  private async readEdgeConfigItem(key: string): Promise<unknown> {
-    const vercel = await this.getVercel();
-    const result = await vercel.edgeConfig.getEdgeConfigItem({
-      edgeConfigId: process.env.RR_EDGE_CONFIG!,
-      edgeConfigItemKey: key,
-      teamId: process.env.VERCEL_TEAM_ID,
-    });
-    return result.value;
-  }
-
-  private async updateEdgeConfig(
-    items: { operation: 'upsert'; key: string; value: unknown }[],
-  ): Promise<void> {
-    const vercel = await this.getVercel();
-    await vercel.edgeConfig.patchEdgeConfigItems({
-      edgeConfigId: process.env.RR_EDGE_CONFIG!,
-      teamId: process.env.VERCEL_TEAM_ID,
-      requestBody: { items },
-    });
-    this.logger.log(
-      `Edge Config updated: ${items.map((i) => i.key).join(', ')}`,
-    );
   }
 
   private verifySignature(
