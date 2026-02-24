@@ -21,7 +21,7 @@ export class AppController {
 
   @Get('/version')
   getVersion(): string {
-    return process.env.VERSION ?? '1.0.6';
+    return process.env.VERSION ?? '1.0.7';
   }
 
   @Post('/webhook')
